@@ -6,7 +6,9 @@
 #include <linux/mm.h> 
 #include <linux/uaccess.h>
 #include <linux/slab.h>
-
+#include <linux/kthread.h>
+#include <linux/delay.h>
+#include <linux/sched.h>
 
 #include <linux/net.h>
 #include <linux/in.h>
@@ -17,6 +19,8 @@ static struct socket *sock;
 static struct socket *sock_send;
 static struct sockaddr_in sin;
 static struct sockaddr_in sin_send;
+static struct task_struct *thread;
+
 
 static int error, len;
 static mm_segment_t old_fs;
@@ -115,7 +119,7 @@ static int receive_udp_msg(char *buf, int len) {
     set_fs(KERNEL_DS);
     error = sock_recvmsg(sock,&msg, msg.msg_flags);
     set_fs(old_fs);
-    pr_info("received bytes: %d", error);
+    pr_info("received bytes: %s, %d", buf, error);
     return size;
 }
 
@@ -213,6 +217,31 @@ static char *devnode(struct device *dev, umode_t *mode)
     return NULL;
 }
 
+
+static int ksocket_start(void) {
+    current->flags |= PF_NOFREEZE;
+    allow_signal(SIGKILL);
+    int size = 0;
+    //todo: get phys addr of sh_mem and then create a mapping in this thread
+    //to share the buffer
+    for (;;)
+    {
+        memset(sh_mem, 0, MESSAGE_SIZE);
+        size = receive_udp_msg(sh_mem, 34);
+        if (signal_pending(current))
+            break;
+    }
+}
+static int lthread_start(void) {
+    thread = kthread_run((void *)ksocket_start, NULL, "test");
+    if (IS_ERR(thread)) 
+        {
+            printk(KERN_INFO "test: unable to start kernel thread\n");
+            return -ENOMEM;
+        }
+
+}
+
 static int __init mchar_init(void)
 {
     int ret = 0;
@@ -265,10 +294,10 @@ static int __init mchar_init(void)
     pr_info("device internal buffer: %p, page addr: %p", sh_mem, page);
     
 
-
+    lthread_start();
    
     //error = sock->ops->connect(sock, (struct sockaddr *)&sin, sizeof(struct sockaddr), 0);
-    receive_udp_msg(sh_mem, 34);
+    //receive_udp_msg(sh_mem, 34);
     send_dank_msg();
     send_dank_msg();
     pr_info("%s", sh_mem);
@@ -281,12 +310,19 @@ out:
 
 static void __exit mchar_exit(void)
 {
-    mutex_destroy(&mchar_mutex); 
+    if (thread != NULL) {
+        kill_pid(thread->pid, SIGKILL, 1);
+    }
+
+    mutex_destroy(&mchar_mutex);
     device_destroy(class, MKDEV(major, 0));  
     class_unregister(class);
     class_destroy(class); 
     unregister_chrdev(major, DEVICE_NAME);
     kfree(sh_mem);
+
+    
+    
     sock_release(sock);
     sock_release(sock_send);
     pr_info("mchar: unregistered!");
