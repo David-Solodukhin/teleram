@@ -1,0 +1,36 @@
+expensive since fault for every access :(
+1. in program, mmap kernel module fd with desired ram size
+2. kernel module startup should send udp ping to mobile client getting max size etc
+3. kernel module intercepts mmap, returns fake mapping, sets vma handlers
+4. user program attempts to use pages and triggers vma handlers which send udp request, hopefully receive response pages (kernel module has buffer size of x number of pages) and then remaps the 
+
+
+
+make; sudo rmmod -f teletest; sudo insmod teletest.ko;, looks like some race condition and page fault on address 321c8 if you fault too soon after module insert????
+
+
+
+
+
+
+===========================userfaultfd=========================
+https://bugs.archlinux.org/task/62780
+http://man7.org/linux/man-pages/man2/userfaultfd.2.html
+
+
+or could use userfaultfd to handle fault in user space?
+
+
+1. in program, mmap some zero region, register this region with userfaultfd, read or write to region
+2. fault handler thread has buffer of pages currently loaded. if a page that isn't loaded is accessed, the buffer is loaded over the network and then remapped to the faulting address. when a new page must be fetched over the network(prompting a page fault), the dirty pages are written over the network.
+uffdio copy??
+how should pthreads share this buffer?
+API:
+void initRam(server port)->create pthread which handles userfaultfd events
+char* download_more_ram(size)->just an mmap wrapper call followed by an ioctl which registers the range as userfaultfd handled.
+-------
+behavior:
+on fault, handler pthread sends current buff data over the net, umaps it from its range, gets new data over the network to populate the buffer and finally remaps it to the faulting address. 
+
+could be slower but easier to ufdio copy and then unmap each time.
+unfortunately can't do this since userfaultfd is not built into the arch linux kernel by default :((((((
