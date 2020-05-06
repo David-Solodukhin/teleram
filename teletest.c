@@ -11,12 +11,12 @@
 #include <linux/net.h>
 #include <linux/in.h>
 #include <linux/netpoll.h>
-#define MESSAGE_SIZE 1024
+#define MESSAGE_SIZE 4096
 #define INADDR_SEND ((unsigned long int) (0x7f000001)) //127.0.0.1
 static struct socket *sock;
+static struct socket *sock_send;
 static struct sockaddr_in sin;
-static struct msghdr msg;
-static struct iovec iov;
+static struct sockaddr_in sin_send;
 
 static int error, len;
 static mm_segment_t old_fs;
@@ -63,23 +63,71 @@ out:
     return ret;
 }
 
-static void send_dank_msg(void) {
-    error = sock_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP, &sock);
-    if (error<0)
-        printk(KERN_DEBUG "socket create failed :( Error %d\n",error);
+/*
+creates two sockets: listening socket and sending socket
+*/
+static int udp_socket_setup(void) {
+    if ((error = sock_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP, &sock)) < 0 ||
+        (error = sock_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP, &sock_send)) < 0) {
+        pr_info("failed to created udp sock %d", error);
+        goto out;
+    }
+
+    /*set up network addressing*/
+    sin_send.sin_family = AF_INET;
     sin.sin_family = AF_INET;
-    sin.sin_port = htons(1337);
-    sin.sin_addr.s_addr = htonl(INADDR_SEND);
-    error = sock->ops->connect(sock, (struct sockaddr *)&sin, sizeof(struct sockaddr), 0);
-    if (error<0)
-        printk(KERN_DEBUG "socket connect failed. Error %d\n",error);
+    sin_send.sin_port = htons(1337); //fix this
+    sin.sin_port = htons(1337); //fix this
+
+    sin_send.sin_addr.s_addr = htonl(INADDR_SEND);
+    sin.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if ((error = sock->ops->bind(sock, (struct sockaddr *)&sin, sizeof(struct sockaddr)) < 0)) {
+        pr_info("failed to bind udp socket %d", error);
+        goto out;
+    }
+    //other socket doesn't even need to connect
+
+
+
+    out:
+        return error;
+}
+
+//probably will change to tcp and move to separate kthread
+static int receive_udp_msg(char *buf, int len) {
+    struct msghdr msg;
+    struct iovec iov;
+    int size = 0;
+
+    if (sock->sk==NULL) 
+        return 0;
+
+    msg.msg_flags = 0;
+    msg.msg_name = &sin;
+    msg.msg_namelen  = sizeof(struct sockaddr_in);
+    msg.msg_control = NULL;
+    msg.msg_controllen = 0;
+    iov.iov_base = buf;
+    iov.iov_len = len;
+    iov_iter_init(&msg.msg_iter, WRITE, &iov, 1, len);
+    old_fs = get_fs();
+    set_fs(KERNEL_DS);
+    error = sock_recvmsg(sock,&msg, msg.msg_flags);
+    set_fs(old_fs);
+    pr_info("received bytes: %d", error);
+    return size;
+}
+
+static void send_dank_msg(void) {
+   
+    struct msghdr msg;
+    struct iovec iov;
     sprintf(message, "there is no documentation anywhere");
     len = strlen(message);
-    printk("%d", len);
-    printk("%s", message);
     //msg.msg_flags = 0;
     //msg.msg_iocb = NULL;
-    msg.msg_name = &sin;
+    msg.msg_name = &sin_send;
     msg.msg_namelen  = sizeof(struct sockaddr_in);
     //msg.msg_control = NULL;
     //msg.msg_controllen = 0;
@@ -88,9 +136,9 @@ static void send_dank_msg(void) {
     iov_iter_init(&msg.msg_iter, WRITE, &iov, 1, len); //last arg is length??
     old_fs = get_fs();
     set_fs(KERNEL_DS);
-    error = sock_sendmsg(sock,&msg);
+    error = sock_sendmsg(sock_send,&msg);
     set_fs(old_fs);
-    pr_info("error: %d", error); //errors are <0, # bytes sent are >0
+    pr_info("sent bytes: %d", error); //errors are <0, # bytes sent are >0
 }
 
 void simple_vma_open(struct vm_area_struct *vma)
@@ -120,7 +168,7 @@ unsigned int simple_vma_fault(struct vm_fault *vmf)
     pr_info("page addr: %p", page);
     get_page(page); //refcount, update page metadata
     vmf->page = page;
-    printk("vm:%p ",sh_mem);  
+    printk("vm:%p ",sh_mem);
 
 
     send_dank_msg();
@@ -167,7 +215,9 @@ static char *devnode(struct device *dev, umode_t *mode)
 
 static int __init mchar_init(void)
 {
-    int ret = 0;    
+    int ret = 0;
+
+    /*register device and class */  
     major = register_chrdev(0, DEVICE_NAME, &mchar_fops);
 
     if (major < 0) {
@@ -184,7 +234,10 @@ static int __init mchar_init(void)
         goto out;
     }
 
+    /*set device class permissions*/
     class->devnode=devnode;
+
+    /*create device*/
     device = device_create(class, NULL, MKDEV(major, 0), NULL, DEVICE_NAME);
     if (IS_ERR(device)) {
         class_destroy(class);
@@ -193,25 +246,34 @@ static int __init mchar_init(void)
         goto out;
     }
 
-
-
-    /* init this mmap area */
+    /*allocate internal shared buffer*/
     sh_mem = kzalloc(MAX_SIZE, GFP_KERNEL); 
     if (sh_mem == NULL) {
         ret = -ENOMEM; 
         goto out;
     }
+
+    /*create udp network socket*/
+    udp_socket_setup();
+
+    mutex_init(&mchar_mutex);
+    /*debug*/
     printk("init");
     sprintf(sh_mem, "xyz\n"); 
     struct page* page;
     page = virt_to_page(sh_mem);
     pr_info("device internal buffer: %p, page addr: %p", sh_mem, page);
-    mutex_init(&mchar_mutex);
+    
 
 
-
+   
+    //error = sock->ops->connect(sock, (struct sockaddr *)&sin, sizeof(struct sockaddr), 0);
+    receive_udp_msg(sh_mem, 34);
     send_dank_msg();
     send_dank_msg();
+    pr_info("%s", sh_mem);
+
+    
     pr_info("finished set up");
 out: 
     return ret;
@@ -225,7 +287,8 @@ static void __exit mchar_exit(void)
     class_destroy(class); 
     unregister_chrdev(major, DEVICE_NAME);
     kfree(sh_mem);
-    
+    sock_release(sock);
+    sock_release(sock_send);
     pr_info("mchar: unregistered!");
 }
 

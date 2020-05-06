@@ -9,7 +9,9 @@ expensive since fault for every access :(
 make; sudo rmmod -f teletest; sudo insmod teletest.ko;, looks like some race condition and page fault on address 321c8 if you fault too soon after module insert????
 
 
+bind() causes the socket to listen for incoming requests on a particular interface/port. In other words, it's used by servers to respond to incoming requests. Only one socket can bind a port.
 
+connect() causes the socket to make a connection to an address/port serviced by a different socket. In other words, it's used by clients to connect to a server. Multiple clients can connect to a port. NOTE: connect() is not required for use with UDP (datagram) sockets, only TCP/IP. UDP is a broadcast protocol, and connect() does not even require that a socket is listening to the other end.
 
 
 
