@@ -5,7 +5,7 @@
 #include <string.h>
 #include<errno.h>
   
-#define DEVICE_FILENAME "/dev/mchar"  
+#define DEVICE_FILENAME "/dev/tram"  
 
 
 int init_ram_server(unsigned long int ip, unsigned int port) {
