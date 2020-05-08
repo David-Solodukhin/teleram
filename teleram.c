@@ -13,32 +13,32 @@
 #include <linux/in.h>
 #include <linux/netpoll.h>
 #include <asm/pgtable_types.h>
+#include <linux/string.h>
 
-#include <linux/rmap.h>
-#include <linux/pagemap.h>
+#define MAX_SIZE (PAGE_SIZE)   /* max size mmaped to userspace */
+#define DEVICE_NAME "tram"
+#define  CLASS_NAME "mogu"
 #define MESSAGE_SIZE 4096
+#define MAX_BUFS 4 //https://lwn.net/Articles/510202/ should make this a hashtable
 #define INADDR_SEND ((unsigned long int) (0x7f000001)) //127.0.0.1
+
 static struct socket *sock;
 static struct socket *sock_send;
 static struct sockaddr_in sin;
 static struct sockaddr_in sin_send;
 static struct task_struct *thread;
-static struct page *page;
-
+//static struct page *page;
 static int error, len;
-//static mm_segment_t old_fs; //setfs ->used for switching btw accessing kernel mem and user mem
 static char message[MESSAGE_SIZE];
-
-
-
-#define MAX_SIZE (PAGE_SIZE)   /* max size mmaped to userspace */
-#define DEVICE_NAME "tram"
-#define  CLASS_NAME "mogu"
-
 static struct class*  class;
 static struct device*  device;
 static int major;
+static int num_buffers = 1; //default support for 1 page
 static char *sh_mem = NULL;
+static char *ip;
+static long unsigned int ip_long = 0x00000000;
+static unsigned int port;
+static char** buffers[MAX_BUFS];
 //static phys_addr_t sh_mem_addr;
 
 static DEFINE_MUTEX(mchar_mutex);
@@ -146,7 +146,7 @@ static int udp_socket_setup(void) {
     sin_send.sin_port = htons(1337); //fix this
     sin.sin_port = htons(1337); //fix this
 
-    sin_send.sin_addr.s_addr = htonl(INADDR_SEND);
+    sin_send.sin_addr.s_addr = htonl(ip_long);
     sin.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if ((error = sock->ops->bind(sock, (struct sockaddr *)&sin, sizeof(struct sockaddr)) < 0)) {
@@ -237,6 +237,7 @@ vm_fault_t simple_vma_fault(struct vm_fault *vmf)
     -page out current: send network message w/ k=sh_mem_vma_start, v=page contents(sh_mem)
     -page in new address: send network msg request k=vmf->vma_start, v=page contents
     kill_pid(task_pid(thread->pid), SIGSTOP, 1)
+    if multiple programs mmap simultaneously, unfortunately only one will get it, so should map a page for each program?
     */
     //vma is vm area associated with a particular handler/allocated by mmap?
     pr_info("fault caused by pid: %d for addr: %lx", current->pid, vmf->address);
@@ -254,7 +255,7 @@ vm_fault_t simple_vma_fault(struct vm_fault *vmf)
     }
     //*/
     pr_info("simple_fault: sh_mem: %s", sh_mem);
-    page = virt_to_page(sh_mem + offset); //why does 2 pages not cause issues?
+    struct page* page = virt_to_page(sh_mem + offset); //why does 2 pages not cause issues?
     get_page(page); //refcount, update page metadata
     vmf->page = page;
 
@@ -367,14 +368,42 @@ static int __init mchar_init(void)
         goto out;
     }
 
-    /*allocate internal shared buffer*/
-    sh_mem = kmalloc(4096 * 2 + 1, GFP_KERNEL); //weird race condition temp workaround :/
-    if (sh_mem == NULL)
-    {
-        pr_info("failed to alloc sh_mem");
-        ret = -ENOMEM; 
-        goto out;
+    /*how many internal buffers to maintain (1 per program that requests mem)*/
+    if (ip != NULL) {
+        char *tmp = ip;
+        int i = 3;
+        while (i >= 0) {
+            char* tstart = tmp;
+            while (*tmp != '.') {
+                tmp++;
+            }
+            *tmp = '\0';
+            tmp++;
+            unsigned long part = simple_strtoul(tstart,&tstart, 10);
+            ip_long |= part << (8 * (i));
+            i--;
+        }
+        pr_info("ip: %lx", ip_long);
+    } else {
+        ip_long = INADDR_SEND;
     }
+    
+
+    /*allocate internal shared buffer*/
+    //TODO: add hashmap with k:pid, v:buffer contents?
+    //TODO define network api so that received msgs know which buffers to pop
+    int i = 0;
+    for (i = 0; i < num_buffers && i < MAX_BUFS; i++) {
+        buffers[i] = kmalloc(4096 * 2 + 1, GFP_KERNEL);
+        if (buffers[i] == NULL)
+        {
+            pr_info("failed to alloc sh_mem");
+            ret = -ENOMEM; 
+            goto out;
+        }
+    }
+    sh_mem = kmalloc(4096 * 2 + 1, GFP_KERNEL); //weird race condition temp workaround :/
+    
 
     /*create udp network socket*/
     if (udp_socket_setup() < 0) {
@@ -417,6 +446,10 @@ static void __exit mchar_exit(void)
     class_destroy(class); 
     unregister_chrdev(major, DEVICE_NAME);
     kfree(sh_mem);
+    int i = 0;
+    for (i = 0; i < num_buffers && i < MAX_BUFS; i++) {
+        kfree(buffers[i]);
+    }
 
     
     
@@ -427,4 +460,7 @@ static void __exit mchar_exit(void)
 
 module_init(mchar_init);
 module_exit(mchar_exit);
+module_param(num_buffers, int, 0644);
+module_param(ip, charp, 0644);
+module_param(port, int, 0644);
 MODULE_LICENSE("GPL");
