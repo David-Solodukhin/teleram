@@ -29,6 +29,8 @@ static int error, len;
 //static mm_segment_t old_fs; //setfs ->used for switching btw accessing kernel mem and user mem
 static char message[MESSAGE_SIZE];
 
+
+
 #define MAX_SIZE (PAGE_SIZE)   /* max size mmaped to userspace */
 #define DEVICE_NAME "tram"
 #define  CLASS_NAME "mogu"
@@ -97,18 +99,6 @@ pte_t *lookup_address_in_pgd(pgd_t *pgd, unsigned long address,
 
     return pte_offset_kernel(pmd, address);
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 /*  executed once the device is closed or releaseed by userspace
  *  @param inodep: pointer to struct inode
@@ -184,8 +174,11 @@ static int receive_udp_msg(char *buf, int len) {
 
     if (sock->sk==NULL) 
         return 0;
-
-    msg.msg_flags = MSG_WAITALL;
+    //talk t d
+    //can do separate kernel thread w MSG_WAITALL and block OR
+    //can wing it and be a bit more efficient w timeout and MSG_DONTWAIT
+    //will have to send sig_stop or something to put it to sleep so it doesn't busy spin->sig_cont
+    msg.msg_flags = MSG_WAITALL /*MSG_DONTWAIT*/;
     msg.msg_name = &sin;
     msg.msg_namelen  = sizeof(struct sockaddr_in);
     msg.msg_control = NULL;
@@ -200,45 +193,28 @@ static int receive_udp_msg(char *buf, int len) {
     //old_fs = get_fs();
     //set_fs(KERNEL_DS);
     //pr_info("waiting for msg in receive_udp_msg");
+    //receive exactly 1 msg from subsystem. what to do when multiple??
     error = kernel_recvmsg(sock,&msg, &kv,1, len, msg.msg_flags);
     //set_fs(old_fs);
-    //pr_info("received bytes: %s, %d", buf, error);
+    if (error > 1) {
+        pr_info("received bytes: %s, %d", buf, error);
+    }
     return error;
 }
 
 static void send_dank_msg(void) {
-   
     struct msghdr msg;
-    //struct iovec iov;
     struct kvec kv;
-    //kmap(NULL);
 
     memset(&msg, 0, sizeof(msg));
-    //memset(&iov, 0, sizeof(iov));
     memset(&kv, 0, sizeof(kv));
-
-    //pr_info("send_dank_msg: message buffer: %p", message);
     sprintf(message, "there is no documentation anywhere");
     len = strlen(message);
-    //msg.msg_flags = 0;
-    //msg.msg_iocb = NULL;
     msg.msg_name = &sin_send;
     msg.msg_namelen  = sizeof(struct sockaddr_in);
-    //msg.msg_control = NULL;
-    //msg.msg_controllen = 0;
-    //iov.iov_base = message;
-    //iov.iov_len = len;
-
     kv.iov_base = message;
     kv.iov_len = len;
-
-
-    //iov_iter_init(&msg.msg_iter, WRITE, &iov, 1, len); //last arg is length??
-    //old_fs = get_fs();
-    //set_fs(KERNEL_DS);
-    //pr_info("send_dank_msg: preparing to send msg");
     error = kernel_sendmsg(sock_send,&msg,&kv,1,len);
-    //set_fs(old_fs);
     //pr_info("sent bytes: %d", error); //errors are <0, # bytes sent are >0
 }
 
@@ -260,49 +236,17 @@ vm_fault_t simple_vma_fault(struct vm_fault *vmf)
     -remapping old vma handled by user library
     -page out current: send network message w/ k=sh_mem_vma_start, v=page contents(sh_mem)
     -page in new address: send network msg request k=vmf->vma_start, v=page contents
+    kill_pid(task_pid(thread->pid), SIGSTOP, 1)
     */
     //vma is vm area associated with a particular handler/allocated by mmap?
-    pr_info("fault caused by pid: %d", current->pid);
+    pr_info("fault caused by pid: %d for addr: %lx", current->pid, vmf->address);
     // unmap_pte or in userspace lib call munmap manually and then remap
-    struct vm_area_struct *vma = vmf->vma;
-    /*
-    pr_info("s_vma_fault: uproc accessed: %lx, %lx", vmf->address, vma->vm_start);
-    if (sh_mem_vma != NULL) {
-        int level = 0;
-        pgd_t * pgd = pgd_offset(sh_mem_vma->vm_mm, sh_mem_vma->vm_start);//current->mm->pgd;
-        pr_info("sh_mem_vma not null");
-        if (pgd != NULL) {
-            pr_info("pgd not null, prev addr: %lx", sh_mem_vma->vm_start);
-            pte_t * pte = lookup_address_in_pgd(pgd, sh_mem_vma->vm_start,&level);
-            if (pte != NULL) {
-                pr_info("attempting to unmap pte");
-                //pte_unmap(pte);
-                //pte_t temp_pte = pte_clear_flags(*pte, _PAGE_PRESENT);
-                //set_pte(pte, temp_pte);
-
-                pr_info("%p", sh_mem);
-                char *sh_mem2 = kmalloc(PAGE_SIZE * 2 +1, GFP_KERNEL);
-                kfree(sh_mem);
-                //delete_from_page_cache(virt_to_page(sh_mem));
-                sh_mem = sh_mem2;
-
-                pr_info("%p", sh_mem);
-                //delete_from_page_cache(virt_to_page(sh_mem));
-                //try_to_unmap(virt_to_page(sh_mem), TTU_IGNORE_MLOCK | TTU_IGNORE_ACCESS);
-                //put_page(virt_to_page(sh_mem));
-                //looks like i gotta do this manually.
-                //pte->pte = 0;
-                //pte_clear(sh_mem_vma->vm_mm, sh_mem_vma->vm_start, pte);
-                //all of the above causes freeze
-            } 
-        }
-            
-    }*/
+    struct vm_area_struct *vma = vmf->vma;    
     
-    //page_cache_release(virt_to_page(sh_mem));
 
-    
-    
+
+
+
     long unsigned int offset;
     offset = (((long unsigned int)vmf->address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT));
     if (offset > PAGE_SIZE << 4) {
@@ -363,11 +307,7 @@ static char *devnode(struct device *dev, umode_t *mode)
 
 
 static int ksocket_start(void) {
-    //current->flags |= PF_NOFREEZE;
     allow_signal(SIGKILL);
-
-    
-
     for (;;)
     {
         memset(sh_mem, 0, MESSAGE_SIZE); //kthreads share the same address space so no need to map
@@ -383,17 +323,13 @@ static int ksocket_start(void) {
     return 0;
 }
 static int lthread_start(void) {
-
-    //sh_mem_addr = virt_to_phys(sh_mem);
-
-    //pr_info("sh_mem_phys: %llu", sh_mem_addr);
     thread = kthread_run((void *)ksocket_start, NULL, "test");
     if (IS_ERR(thread)) 
     {
         printk(KERN_INFO "test: unable to start kernel thread\n");
         return -ENOMEM;
     }
-    pr_info("thread started with pid: %d", thread->pid);
+    //pr_info("thread started with pid: %d", thread->pid);
     return 0;
 
 }
@@ -450,24 +386,15 @@ static int __init mchar_init(void)
     /*debug*/
     printk("init");
     sprintf(sh_mem, "xyz\n"); 
-    //struct page* page;
-    //page = virt_to_page(sh_mem);
-    //pr_info("device internal buffer: %p, page addr: %p", sh_mem, page);
-    
 
     lthread_start();
-    //pr_info("preparing to send msg");
-    //error = sock->ops->connect(sock, (struct sockaddr *)&sin, sizeof(struct sockaddr), 0);
-    //receive_udp_msg(sh_mem, 34);
-    send_dank_msg();
-    send_dank_msg();
-    //pr_info("sh_mem: %s", sh_mem);
 
-    pr_info("pid :%d", current->pid);
+    send_dank_msg();
+    send_dank_msg();
+
+    pr_info("module pid :%d, thread pid: %d", current->pid, thread->pid);
     pr_info("finished set up");
     msleep(300);
-    //pr_info("base: sh_mem: %s", sh_mem);
-
 out: 
     return 0;
 }

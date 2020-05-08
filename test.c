@@ -45,15 +45,17 @@ char* download_more_ram() {
         goto out;
     }
     if (mem != NULL) {
+        printf("previous mapping exists: %p\n", mem);
         /*hard invalidate old mapping*/
         munmap(mem, 4096);
         /*remap so that vma_ops are kept and old stuff can be paged back in with the fault op*/
-        mmap(mem,
+        char *t = mmap(mem,
              4096,
              PROT_READ | PROT_WRITE,  
              MAP_SHARED | MAP_NORESERVE,  
              ramfd,  
              0);
+        printf("remapped %p to %p\n", mem, t);
     }
     
     /*set new current mapping*/
