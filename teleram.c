@@ -255,11 +255,17 @@ void simple_vma_close(struct vm_area_struct *vma)
 
 vm_fault_t simple_vma_fault(struct vm_fault *vmf)
 {
+    /*
+    todo
+    -remapping old vma handled by user library
+    -page out current: send network message w/ k=sh_mem_vma_start, v=page contents(sh_mem)
+    -page in new address: send network msg request k=vmf->vma_start, v=page contents
+    */
     //vma is vm area associated with a particular handler/allocated by mmap?
     pr_info("fault caused by pid: %d", current->pid);
     // unmap_pte or in userspace lib call munmap manually and then remap
     struct vm_area_struct *vma = vmf->vma;
-    
+    /*
     pr_info("s_vma_fault: uproc accessed: %lx, %lx", vmf->address, vma->vm_start);
     if (sh_mem_vma != NULL) {
         int level = 0;
@@ -291,7 +297,7 @@ vm_fault_t simple_vma_fault(struct vm_fault *vmf)
             } 
         }
             
-    }
+    }*/
     
     //page_cache_release(virt_to_page(sh_mem));
 

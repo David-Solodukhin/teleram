@@ -14,6 +14,15 @@ static int ramfd;
 int init_ram_server(unsigned long int ip, unsigned int port) {
     //write to the /dev file
 }
+void delete_ram(char* addr) {
+    if (mem == addr) {
+        mem = NULL;
+    }
+    munmap(addr, 4096);
+    //TODO: somehow tell module to send delete request to remote page
+
+}
+/*returns one allocated page*/
 char* download_more_ram() {
     if (ramfd == 0)
         ramfd = open(DEVICE_FILENAME, O_RDWR|O_NDELAY);  
@@ -22,18 +31,33 @@ char* download_more_ram() {
         printf("failed to open ram file\n");
         goto out;
     }
-    //munmap(mem, 4096); //unmap previous since internal buffer should only be one page
-    mem = (char*)mmap(NULL,  
+
+
+    /*allocate new block*/
+     char* memt = (char*)mmap(NULL,  
                     4096, //constant one page for now
                     PROT_READ | PROT_WRITE,  
                     MAP_SHARED | MAP_NORESERVE,  
                     ramfd,  
                     0);
-    if (!mem) {
+    if (!memt) {
         printf("failed to get more ram\n");
         goto out;
     }
-
+    if (mem != NULL) {
+        /*hard invalidate old mapping*/
+        munmap(mem, 4096);
+        /*remap so that vma_ops are kept and old stuff can be paged back in with the fault op*/
+        mmap(mem,
+             4096,
+             PROT_READ | PROT_WRITE,  
+             MAP_SHARED | MAP_NORESERVE,  
+             ramfd,  
+             0);
+    }
+    
+    /*set new current mapping*/
+    mem = memt;
     out:
         return mem;
 }
