@@ -257,23 +257,28 @@ vm_fault_t simple_vma_fault(struct vm_fault *vmf)
     pr_info("fault caused by pid: %d", current->pid);
     // unmap_pte or in userspace lib call munmap manually and then remap
     struct vm_area_struct *vma = vmf->vma;
-    ///*
+    /*
     pr_info("s_vma_fault: uproc accessed: %lx, %lx", vmf->address, vma->vm_start);
     if (sh_mem_vma != NULL) {
         int level = 0;
-        pgd_t * pgd = pgd_offset(sh_mem_vma->vm_mm, vma->vm_start);//current->mm->pgd;
+        pgd_t * pgd = pgd_offset(sh_mem_vma->vm_mm, sh_mem_vma->vm_start);//current->mm->pgd;
         pr_info("sh_mem_vma not null");
         if (pgd != NULL) {
             pr_info("pgd not null, prev addr: %lx", sh_mem_vma->vm_start);
             pte_t * pte = lookup_address_in_pgd(pgd, sh_mem_vma->vm_start,&level);
             if (pte != NULL) {
                 pr_info("attempting to unmap pte");
-                pte_unmap(pte);
+                //pte_unmap(pte);
+                pte_t temp_pte = pte_clear_flags(*pte, _PAGE_PRESENT);
+                set_pte(pte, temp_pte);
+                //looks like i gotta do this manually.
+                //pte->pte = 0;
+                //pte_clear(sh_mem_vma->vm_mm, sh_mem_vma->vm_start, pte);
             } 
         }
             
     }
-    
+    */
 
     long unsigned int offset;
     offset = (((long unsigned int)vmf->address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT));
@@ -282,7 +287,7 @@ vm_fault_t simple_vma_fault(struct vm_fault *vmf)
     }
     //*/
     pr_info("simple_fault: sh_mem: %s", sh_mem);
-    page = virt_to_page(sh_mem); //why does 2 pages not cause issues?
+    page = virt_to_page(sh_mem + offset); //why does 2 pages not cause issues?
     get_page(page); //refcount, update page metadata
     vmf->page = page;
 
