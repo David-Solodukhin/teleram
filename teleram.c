@@ -9,10 +9,11 @@
 #include <linux/kthread.h>
 #include <linux/delay.h>
 #include <linux/sched.h>
-
 #include <linux/net.h>
 #include <linux/in.h>
 #include <linux/netpoll.h>
+#include <asm/pgtable_types.h>
+
 #define MESSAGE_SIZE 4096
 #define INADDR_SEND ((unsigned long int) (0x7f000001)) //127.0.0.1
 static struct socket *sock;
@@ -20,10 +21,10 @@ static struct socket *sock_send;
 static struct sockaddr_in sin;
 static struct sockaddr_in sin_send;
 static struct task_struct *thread;
-
+static struct page *page;
 
 static int error, len;
-static mm_segment_t old_fs; //setfs ->used for switching btw accessing kernel mem and user mem
+//static mm_segment_t old_fs; //setfs ->used for switching btw accessing kernel mem and user mem
 static char message[MESSAGE_SIZE];
 
 #define MAX_SIZE (PAGE_SIZE)   /* max size mmaped to userspace */
@@ -34,9 +35,78 @@ static struct class*  class;
 static struct device*  device;
 static int major;
 static char *sh_mem = NULL;
-static phys_addr_t sh_mem_addr;
+//static phys_addr_t sh_mem_addr;
 
 static DEFINE_MUTEX(mchar_mutex);
+
+
+/* internal buffer mapping */
+struct vm_area_struct *sh_mem_vma = NULL;
+
+pte_t *lookup_address_in_pgd(pgd_t *pgd, unsigned long address,
+                 unsigned int *level)
+{
+    p4d_t *p4d;
+    pud_t *pud;
+    pmd_t *pmd;
+
+    *level = PG_LEVEL_NONE;
+
+    if (pgd_none(*pgd))
+        return NULL;
+
+    p4d = p4d_offset(pgd, address);
+    if (p4d_none(*p4d)) {
+        pr_info("failed 1");
+                return NULL;
+
+    }
+
+
+    *level = PG_LEVEL_512G;
+    if (p4d_large(*p4d) || !p4d_present(*p4d))
+        return (pte_t *)p4d;
+
+    pud = pud_offset(p4d, address);
+    if (pud_none(*pud))
+        {
+        pr_info("failed 2");
+                return NULL;
+
+    }
+
+    *level = PG_LEVEL_1G;
+    if (pud_large(*pud) || !pud_present(*pud))
+        return (pte_t *)pud;
+
+    pmd = pmd_offset(pud, address);
+    if (pmd_none(*pmd))
+        {
+        pr_info("failed 3");
+                return NULL;
+
+    }
+
+    *level = PG_LEVEL_2M;
+    if (pmd_large(*pmd) || !pmd_present(*pmd))
+        return (pte_t *)pmd;
+
+    *level = PG_LEVEL_4K;
+
+    return pte_offset_kernel(pmd, address);
+}
+
+
+
+
+
+
+
+
+
+
+
+
 
 /*  executed once the device is closed or releaseed by userspace
  *  @param inodep: pointer to struct inode
@@ -127,10 +197,10 @@ static int receive_udp_msg(char *buf, int len) {
     //iov_iter_init(&msg.msg_iter, WRITE, &iov, 1, len);
     //old_fs = get_fs();
     //set_fs(KERNEL_DS);
-    pr_info("waiting for msg in receive_udp_msg");
+    //pr_info("waiting for msg in receive_udp_msg");
     error = kernel_recvmsg(sock,&msg, &kv,1, len, msg.msg_flags);
     //set_fs(old_fs);
-    pr_info("received bytes: %s, %d", buf, error);
+    //pr_info("received bytes: %s, %d", buf, error);
     return error;
 }
 
@@ -145,7 +215,7 @@ static void send_dank_msg(void) {
     //memset(&iov, 0, sizeof(iov));
     memset(&kv, 0, sizeof(kv));
 
-    pr_info("send_dank_msg: message buffer: %p", message);
+    //pr_info("send_dank_msg: message buffer: %p", message);
     sprintf(message, "there is no documentation anywhere");
     len = strlen(message);
     //msg.msg_flags = 0;
@@ -164,16 +234,16 @@ static void send_dank_msg(void) {
     //iov_iter_init(&msg.msg_iter, WRITE, &iov, 1, len); //last arg is length??
     //old_fs = get_fs();
     //set_fs(KERNEL_DS);
-    pr_info("send_dank_msg: preparing to send msg");
+    //pr_info("send_dank_msg: preparing to send msg");
     error = kernel_sendmsg(sock_send,&msg,&kv,1,len);
     //set_fs(old_fs);
-    pr_info("sent bytes: %d", error); //errors are <0, # bytes sent are >0
+    //pr_info("sent bytes: %d", error); //errors are <0, # bytes sent are >0
 }
 
 void simple_vma_open(struct vm_area_struct *vma)
 {
-    printk(KERN_NOTICE "VMA open, virt %lx, phys %lx\n",
-    vma->vm_start, vma->vm_pgoff << PAGE_SHIFT);
+    printk(KERN_NOTICE "VMA open ======================================="); /*, virt %lx, phys %lx\n",
+    vma->vm_start, vma->vm_pgoff << PAGE_SHIFT);*/
 }
 void simple_vma_close(struct vm_area_struct *vma)
 {
@@ -181,26 +251,47 @@ void simple_vma_close(struct vm_area_struct *vma)
 }
 
 
-unsigned int simple_vma_fault(struct vm_fault *vmf)
+vm_fault_t simple_vma_fault(struct vm_fault *vmf)
 {
-
+    //vma is vm area associated with a particular handler/allocated by mmap?
+    pr_info("fault caused by pid: %d", current->pid);
+    // unmap_pte or in userspace lib call munmap manually and then remap
     struct vm_area_struct *vma = vmf->vma;
-    struct page *page = NULL;
-    unsigned long offset;
-    printk(KERN_NOTICE "MWR: simple_vma_fault\n");
-    offset = (((unsigned long)vmf->address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT));
+    ///*
+    pr_info("s_vma_fault: uproc accessed: %lx, %lx", vmf->address, vma->vm_start);
+    if (sh_mem_vma != NULL) {
+        int level = 0;
+        pgd_t * pgd = pgd_offset(sh_mem_vma->vm_mm, vma->vm_start);//current->mm->pgd;
+        pr_info("sh_mem_vma not null");
+        if (pgd != NULL) {
+            pr_info("pgd not null, prev addr: %lx", sh_mem_vma->vm_start);
+            pte_t * pte = lookup_address_in_pgd(pgd, sh_mem_vma->vm_start,&level);
+            if (pte != NULL) {
+                pr_info("attempting to unmap pte");
+                pte_unmap(pte);
+            } 
+        }
+            
+    }
+    
+
+    long unsigned int offset;
+    offset = (((long unsigned int)vmf->address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT));
     if (offset > PAGE_SIZE << 4) {
         goto nopage_out;  
     }
-    printk("virt to page? %lx", vmf->address);
-    page = virt_to_page((unsigned long)sh_mem + offset);
-    pr_info("page addr: %p", page);
+    //*/
+    pr_info("simple_fault: sh_mem: %s", sh_mem);
+    page = virt_to_page(sh_mem); //why does 2 pages not cause issues?
     get_page(page); //refcount, update page metadata
     vmf->page = page;
-    printk("vm:%p ",sh_mem);
 
-
+    sh_mem_vma = vmf->vma;
+    //need to remove all sh_mem page mappings in the previous vma first
+    //then need to map in current vma sh_mem page.
+    pr_info("simple_vma_fault: finished vm fault op");
     send_dank_msg();
+        //pr_info("%llx", (long long unsigned int)(*((long long unsigned int *)0xf00000000000321c8)));
 
 nopage_out:
     return 0;
@@ -213,8 +304,8 @@ static struct vm_operations_struct simple_remap_vm_ops = {
 };
 static int mchar_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-    printk(KERN_INFO "Device simple_vma_ops_mmap\n");
-    vma->vm_private_data = sh_mem;
+    //printk(KERN_INFO "Device simple_vma_ops_mmap\n");
+    //vma->vm_private_data = sh_mem;
     vma->vm_ops = &simple_remap_vm_ops;
     simple_vma_open(vma);
     printk(KERN_INFO "Device mmap OK\n");
@@ -246,7 +337,6 @@ static char *devnode(struct device *dev, umode_t *mode)
 static int ksocket_start(void) {
     //current->flags |= PF_NOFREEZE;
     allow_signal(SIGKILL);
-    int size;
 
     
 
@@ -255,9 +345,9 @@ static int ksocket_start(void) {
         memset(sh_mem, 0, MESSAGE_SIZE); //kthreads share the same address space so no need to map
         if (signal_pending(current))
             break;
-        pr_info("blocking on receive in thread");
-        size = receive_udp_msg(sh_mem, 34);
-        pr_info("thread: sh_mem: %s", sh_mem);
+        //pr_info("blocking on receive in thread");
+        receive_udp_msg(sh_mem, 34);
+        //pr_info("thread: sh_mem: %s", sh_mem);
         
     }
     pr_info("thread attempted to exit");
@@ -314,8 +404,10 @@ static int __init mchar_init(void)
     }
 
     /*allocate internal shared buffer*/
-    sh_mem = kzalloc(MAX_SIZE, GFP_KERNEL); 
-    if (sh_mem == NULL) {
+    sh_mem = kmalloc(4096 * 2 + 1, GFP_KERNEL); //weird race condition temp workaround :/
+    if (sh_mem == NULL)
+    {
+        pr_info("failed to alloc sh_mem");
         ret = -ENOMEM; 
         goto out;
     }
@@ -336,17 +428,17 @@ static int __init mchar_init(void)
     
 
     lthread_start();
-    pr_info("preparing to send msg");
+    //pr_info("preparing to send msg");
     //error = sock->ops->connect(sock, (struct sockaddr *)&sin, sizeof(struct sockaddr), 0);
     //receive_udp_msg(sh_mem, 34);
     send_dank_msg();
     send_dank_msg();
-    pr_info("sh_mem: %s", sh_mem);
+    //pr_info("sh_mem: %s", sh_mem);
 
     pr_info("pid :%d", current->pid);
     pr_info("finished set up");
     msleep(300);
-    pr_info("base: sh_mem: %s", sh_mem);
+    //pr_info("base: sh_mem: %s", sh_mem);
 
 out: 
     return 0;

@@ -4,7 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 #include<errno.h>
-  
+#include <sys/types.h>
+
 #define DEVICE_FILENAME "/dev/tram"  
 
 
@@ -37,6 +38,7 @@ char* download_more_ram() {
 }
 int main()  
 {  
+    printf("pid: %d\n", getpid());
     int fd;  
     int ret;
     char *p = NULL;
@@ -48,29 +50,38 @@ int main()
         printf("failed to open device file");
         goto out;
     }
+    printf("allocating a page\n");
     p = (char*)mmap(NULL,  
                     4096,  
                     PROT_READ | PROT_WRITE,  
                     MAP_SHARED,  
                     fd,  
                     0);
+    p2 = p;
+    printf("page %p contains: %s\n", p, *p);
 
-    printf("%p", p);
-    printf("attempting to write to page\n");
+    printf("attempting to write to page %p\n", p);
     *p = 'A';
-    printf("%s", p);
-    //create another ram map?
-    p2 = (char*)mmap(NULL,  
+    printf("page %p contains: %s\n", p, *p);
+    //printf("here");
+    //if (*p == 'A') { //so that compiler doesn't optimize second access out
+    //    printf("yolo\n");
+    //    *p = 'Q';
+    //}
+    
+    printf("allocating another page\n");
+    p = (char*)mmap(NULL,  
                     4096,  
                     PROT_READ | PROT_WRITE,  
                     MAP_SHARED,  
                     fd,  
                     0);
-    printf("%s", p2);
-
-
-        //munmap(p, 4096);  
-  
+    printf("attempting to write to page %p\n", p);
+    *p = 'B';
+    printf("page %p contains: %s\n", p, *p);
+    printf("attempting to write to first allocated page\n");
+    *p2 = 'A';
+    printf("page %p contains: %s", p2, *p2);
     close(fd);
 out:
     return ret;  

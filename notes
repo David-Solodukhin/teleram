@@ -13,6 +13,8 @@ bind() causes the socket to listen for incoming requests on a particular interfa
 
 connect() causes the socket to make a connection to an address/port serviced by a different socket. In other words, it's used by clients to connect to a server. Multiple clients can connect to a port. NOTE: connect() is not required for use with UDP (datagram) sockets, only TCP/IP. UDP is a broadcast protocol, and connect() does not even require that a socket is listening to the other end.
 
+The virtual memory area (VMA) is the kernel data structure used to manage distinct regions of a process's address space. A VMA represents a homogeneous region in the virtual memory of a process: a contiguous range of virtual addresses that have the same permission flags and are backed up by the same object (a file, say, or swap space). It corresponds loosely to the concept of a "segment," although it is better described as "a memory object with its own properties."
+
 
 
 ===========================userfaultfd=========================
