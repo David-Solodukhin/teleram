@@ -14,6 +14,8 @@
 #include <linux/netpoll.h>
 #include <asm/pgtable_types.h>
 
+#include <linux/rmap.h>
+#include <linux/pagemap.h>
 #define MESSAGE_SIZE 4096
 #define INADDR_SEND ((unsigned long int) (0x7f000001)) //127.0.0.1
 static struct socket *sock;
@@ -257,7 +259,7 @@ vm_fault_t simple_vma_fault(struct vm_fault *vmf)
     pr_info("fault caused by pid: %d", current->pid);
     // unmap_pte or in userspace lib call munmap manually and then remap
     struct vm_area_struct *vma = vmf->vma;
-    /*
+    
     pr_info("s_vma_fault: uproc accessed: %lx, %lx", vmf->address, vma->vm_start);
     if (sh_mem_vma != NULL) {
         int level = 0;
@@ -269,17 +271,32 @@ vm_fault_t simple_vma_fault(struct vm_fault *vmf)
             if (pte != NULL) {
                 pr_info("attempting to unmap pte");
                 //pte_unmap(pte);
-                pte_t temp_pte = pte_clear_flags(*pte, _PAGE_PRESENT);
-                set_pte(pte, temp_pte);
+                //pte_t temp_pte = pte_clear_flags(*pte, _PAGE_PRESENT);
+                //set_pte(pte, temp_pte);
+
+                pr_info("%p", sh_mem);
+                char *sh_mem2 = kmalloc(PAGE_SIZE * 2 +1, GFP_KERNEL);
+                kfree(sh_mem);
+                //delete_from_page_cache(virt_to_page(sh_mem));
+                sh_mem = sh_mem2;
+
+                pr_info("%p", sh_mem);
+                //delete_from_page_cache(virt_to_page(sh_mem));
+                //try_to_unmap(virt_to_page(sh_mem), TTU_IGNORE_MLOCK | TTU_IGNORE_ACCESS);
+                //put_page(virt_to_page(sh_mem));
                 //looks like i gotta do this manually.
                 //pte->pte = 0;
                 //pte_clear(sh_mem_vma->vm_mm, sh_mem_vma->vm_start, pte);
+                //all of the above causes freeze
             } 
         }
             
     }
-    */
+    
+    //page_cache_release(virt_to_page(sh_mem));
 
+    
+    
     long unsigned int offset;
     offset = (((long unsigned int)vmf->address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT));
     if (offset > PAGE_SIZE << 4) {

@@ -22,11 +22,11 @@ char* download_more_ram() {
         printf("failed to open ram file\n");
         goto out;
     }
-    munmap(mem, 4096); //unmap previous since internal buffer should only be one page
+    //munmap(mem, 4096); //unmap previous since internal buffer should only be one page
     mem = (char*)mmap(NULL,  
                     4096, //constant one page for now
                     PROT_READ | PROT_WRITE,  
-                    MAP_SHARED,  
+                    MAP_SHARED | MAP_NORESERVE,  
                     ramfd,  
                     0);
     if (!mem) {
